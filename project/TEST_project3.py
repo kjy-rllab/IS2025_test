@@ -55,7 +55,7 @@ def get_args():
     You can add any arguments you want.
     """
     parser.add_argument("--max_timesteps", default=1e5, type=int)
-    parser.add_argument("--model_name", default="model.pkl", type=str, help="model name to save and use")
+    parser.add_argument("--model_name", default="model_test.pkl", type=str, help="model name to save and use")
     ###################################################
     ###################################################
     
