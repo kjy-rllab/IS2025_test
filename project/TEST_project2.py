@@ -1,3 +1,4 @@
+
 import os
 import time
 import argparse
@@ -12,25 +13,19 @@ from ament_index_python.packages import get_package_prefix
 from message.msg import Result, Query
 from rccar_gym.env_wrapper import RCCarWrapper
 
+from sklearn.utils import shuffle
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C,RationalQuadratic, WhiteKernel as WK
 from joblib import dump, load
-import torch
-from .PPO import *
-from .utils import ReplayBuffer
-from tqdm import tqdm
-
 from sklearn.preprocessing import normalize
+from sklearn.decomposition import PCA
+import random
+import time
 
 ###################################################
-########## YOU CAN ONLY CHANGE THIS PART  #########
+########## YOU MUST CHANGE THIS PART ##############
 
-"""
-Freely import modules, define methods and classes, etc.
-You may add other python codes, but make sure to push it to github.
-To use particular modules, please let TA know to install them on the evaluation server, too.
-If you want to use a deep-learning library, please use pytorch.
-"""
-
-TEAM_NAME = "RTS"
+TEAM_NAME = "TEST"
 
 ###################################################
 ###################################################
@@ -50,12 +45,10 @@ def get_args():
     ###################################################
     ########## YOU CAN ONLY CHANGE THIS PART ##########
     """
-    Change the model name as you want.
-    Note that this will used for evaluation by the server as well.
-    You can add any arguments you want.
+    Change the name as you want.
+    Note that this will used for evaluation by server as well.
     """
-    parser.add_argument("--max_timesteps", default=1e5, type=int)
-    parser.add_argument("--model_name", default="model.pkl", type=str, help="model name to save and use")
+    parser.add_argument("--model_name", default="gp_60_super_light3.pkl", type=str, help="model name to save and use")
     ###################################################
     ###################################################
     
@@ -93,9 +86,9 @@ def get_args():
     return args
 
 
-class RCCarPolicy(Node):
+class GaussianProcess(Node):
     def __init__(self, args):
-        super().__init__(f"{TEAM_NAME}_project3")
+        super().__init__(f"{TEAM_NAME}_project1")
         self.args = args
         self.mode = args.mode
 
@@ -115,72 +108,163 @@ class RCCarPolicy(Node):
         self.model_name = args.model_name
         self.model_path = args.model_path
         
-    ###################################################
-    ########## YOU CAN ONLY CHANGE THIS PART ##########
+        ###################################################
+        ########## YOU CAN ONLY CHANGE THIS PART ##########
         """
-        Freely change the codes to increase the performance.
+        1) Choose the maps to use for training as expert demonstration.
+        2) Define your model and other configurations for pre/post-processing.
         """
-        steer_action_std = 1.
-
-        vel_action_std = 1.
-
-
-        ############ PPO hyper params ############
-
-        K_epochs = 30
-
-        eps_clip = 0.2
-        gamma = 0.95
-
-        lr_actor = 0.0005
-        lr_critic = 0.001
-        has_continuous_action_space = True
-        state_dim = 720
-        action_dim = 2
-
-        self.model = PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space,self.max_steer,steer_action_std,vel_action_std, batch_size = 64)
-        self.load()
-        self.get_logger().info(">>> Running Project 3 for TEAM {}".format(TEAM_NAME))
+        self.train_maps = ['map1', 'map2', 'map3', 'map4', 'map5', 'map6', 'map7', 'map8', 'map9', 'map10', 'map11', 'map12', 'map13', 'map14', 'map15', 'map16', 'map17', 'map18', 'map19' ]
+        self.kernel = (
+        C(1.0, (1e-2, 1e2)) * RBF(1.0, (1e-2, 1e2))
+         
+          + WK(1e-4, (1e-4,1)))
+        #+ RationalQuadratic(length_scale= 1.0, alpha= 0.5, length_scale_bounds=(1e-5, 1e3))
+        self.alpha = 1e-7
+        self.model = GaussianProcessRegressor(kernel=self.kernel, alpha=self.alpha, n_restarts_optimizer=4)
+        self.pca = PCA(n_components = 120)
         
+        ###################################################
+        ###################################################
+        
+
+        self.load()
+        self.get_logger().info(">>> Running Project 2 for TEAM {}".format(TEAM_NAME))
         
     def train(self):
         self.get_logger().info(">>> Start model training")
+        
+        ###################################################
+        ########## YOU CAN ONLY CHANGE THIS PART ##########
         """
-        Train and save your model.
-        You can either use this part or explicitly train using other python codes.
+        1) load your expert demonstration.
+        2) Fit GP model, which gets lidar observation as input, and gives action as output.
+           We recommend to pre/post-process observations and actions for better performance (e.g. normalization).
         """
-        pass
-      
-        self.get_logger().info(">>> Trained model {} is saved".format(self.model_name))
+        
+        #random.shuffle(self.train_maps)
+
+        train_obs_list = np.empty((0, 720))
+        train_act_list = np.empty((0,1))
+
+        for map in self.train_maps:
+            obs_list = load(os.path.join(self.traj_dir, f"obs_list_{map}.pkl"))
+            act_list = load(os.path.join(self.traj_dir, f"act_list_{map}.pkl"))
+            act_list = act_list[:,0]
+
+            #print(obs_list.shape)
+            #print(act_list.shape)
+            save_step = 4
+            curve_step = 1
+            prev_act = None
+            delta = 0
+            
+            for i in range(act_list.shape[0]):
+                if(i%save_step == 0):
+                    train_obs_list = np.concatenate((train_obs_list, obs_list[i].reshape(1,-1)), axis = 0)
+                    train_act_list = np.concatenate((train_act_list, act_list[i].reshape(1,-1)),axis = 0)
+                else:
+                    if(prev_act is not None):
+                        delta = act_list[i] - prev_act
+                        if(abs(delta) > 0.02 and i%curve_step==0):
+                            train_obs_list = np.concatenate((train_obs_list, obs_list[i].reshape(1,-1)), axis = 0)
+                            train_act_list = np.concatenate((train_act_list, act_list[i].reshape(1,-1)),axis = 0)
+                prev_act = act_list[i]
+            #print(f"{map} loading complete!")
+        #print("All maps are loaded! Starting Histogram Filtering")
+        #dump([train_obs_list, train_act_list], os.path.join(self.traj_dir, "flitered_data"))
+        #[train_obs_list, train_act_list] = load(os.path.join(self.traj_dir, "flitered_data"))
+
+        hist, bin_edges = np.histogram(train_act_list.flatten(), bins=15)
+
+        weights = 1.0 / (hist + 1e-6)  # Inverse frequency weights to balance distribution
+        bin_indices = np.digitize(train_act_list.flatten(), bins=bin_edges[:-1]) - 1
+        probabilities = weights[bin_indices]
+        probabilities /= probabilities.sum()  # Normalize probabilities
+
+        # Perform weighted sampling
+        sampled_indices = np.random.choice(len(train_act_list), size=len(train_act_list) // 5, p=probabilities)
+        train_obs_list = train_obs_list[sampled_indices]
+        train_act_list = train_act_list[sampled_indices]
+        #print("histogram filtering finished")
+
+        # 중복 제거
+        unique_obs, unique_indices = np.unique(train_obs_list, axis=0, return_index=True)
+        train_obs_list = unique_obs
+        train_act_list = train_act_list[unique_indices]
+
+        train_obs_list = normalize(train_obs_list, norm='l2')
+        train_obs_list = self.pca.fit_transform(train_obs_list)
+        train_obs_list, train_act_list = shuffle(train_obs_list, train_act_list, random_state = 18)
+        #print(train_obs_list.shape)
+        #start_time = time.time()
+        self.model.fit(train_obs_list, train_act_list)
+        #end_time = time.time()
+
+        #self.get_logger().info(f"Model training completed in {end_time - start_time} seconds.")
+
+
+        ###################################################
+        ###################################################
+
+        os.makedirs(self.model_dir, exist_ok=True)
+
+        ###################################################
+        ########## YOU CAN ONLY CHANGE THIS PART ##########
+        """
+        Save the file containing trained model and configuration for pre/post-processing.
+        """
+        model_dict = {'gpr': self.model, 'pca': self.pca}
+        #model_dict = self.model
+        dump(model_dict, os.path.join(self.model_dir, f"{self.model_name}"))
+        ###################################################
+        ###################################################
+        
+        #self.get_logger().info(">>> Trained model {} is saved".format(self.model_name))
+        
             
     def load(self):
-        """
-        Load your trained model.
-        Make sure not to train a new model when self.mode == 'val'.
-        """
         if self.mode == 'val':
-            assert os.path.exists(self.model_dir)
-            self.model.load(os.path.join(self.model_dir, self.model_name))
-            self.model.policy.to("cpu")
+            assert os.path.exists(self.model_path)
+            ###################################################
+            ########## YOU CAN ONLY CHANGE THIS PART ##########
+            """
+            Load the trained model and configurations for pre/post-processing.
+            """
+            #self.model = load(self.model_path)
+            #self.model = self.model.set_params(**model_params)
+            model_dict = load(self.model_path)
+            self.model = model_dict['gpr']
+            self.pca = model_dict['pca']
+            ###################################################
+            ###################################################
         elif self.mode == 'train':
             self.train()
         else:
             raise AssertionError("mode should be one of 'train' or 'val'.")   
 
     def get_action(self, obs):
+        ###################################################
+        ########## YOU CAN ONLY CHANGE THIS PART ##########
         """
-        Predict action using obs - 'scan' data.
-        Be sure to satisfy the limitation of steer and speed values.
+        1) Pre-process the observation input, which is current 'scan' data.
+        2) Get predicted action from the model.
+        3) Post-process the action. Be sure to satisfy the limitation of steer and speed values.
         """
-        obs = torch.tensor(normalize(obs.reshape(1, -1), axis = 1))
-        action = self.model.policy.act_eval(obs)
-        #action = np.array([[action[0][0],action[0][1]]])
-        #speed = 4.
-        #action = np.array([[steer.item(),speed]])
+        # Pre-processing // obs shape: (720,) -> (1, 720)
+        obs = np.array(obs)
+        obs = normalize(obs.reshape(1, -1), axis = 1)
+        obs = self.pca.transform(obs)
+
+        # Prediction
+        steer = self.model.predict(obs)
+        speed = self.max_speed
+        action = np.array([steer[0], speed])
+        action = action.reshape(1, -1)
+
+        ###################################################
+        ###################################################
         return action
-    
-    ###################################################
-    ###################################################
 
     def query_callback(self, query_msg):
         
@@ -215,6 +299,7 @@ class RCCarPolicy(Node):
             
             self.get_logger().info(f"[{team}] START TO EVALUATE! MAP NAME: {map}")
             
+            
             ### New environment
             env = RCCarWrapper(args=self.args, maps=[map], render_mode="human_fast" if self.render else None)
             track = env._env.unwrapped.track
@@ -228,7 +313,6 @@ class RCCarPolicy(Node):
             terminate = False
 
             while True:  
-
                 act = self.get_action(scan)
                 steer = np.clip(act[0][0], -self.max_steer, self.max_steer)
                 speed = np.clip(act[0][1], self.min_speed, self.max_speed)
@@ -250,7 +334,6 @@ class RCCarPolicy(Node):
                     result_msg.waypoint = info['waypoint']
                     result_msg.n_waypoints = 20
                     result_msg.success = False
-                    
                     result_msg.fail_type = "Time Out"
                     self.get_logger().info(">>> Time Out: {}".format(map))
                     self.result_pub.publish(result_msg)
@@ -298,7 +381,7 @@ class RCCarPolicy(Node):
 def main():
     args = get_args()
     rclpy.init()
-    node = RCCarPolicy(args)
+    node = GaussianProcess(args)
     rclpy.spin(node)
 
 
