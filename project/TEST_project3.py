@@ -120,25 +120,20 @@ class RCCarPolicy(Node):
         """
         Freely change the codes to increase the performance.
         """
-        steer_action_std = 1.
-
-        vel_action_std = 1.
-
-
-        ############ PPO hyper params ############
-
+        action_std = 0.5*self.max_steer
         K_epochs = 30
 
         eps_clip = 0.2
-        gamma = 0.95
+        gamma = 0.99
 
-        lr_actor = 0.0005
-        lr_critic = 0.001
+        lr_actor = 0.005
+        lr_critic = 0.01
         has_continuous_action_space = True
         state_dim = 720
         action_dim = 1
 
-        self.model = PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space,self.max_steer,steer_action_std,vel_action_std, batch_size = 64)
+
+        self.model= PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space,self.max_steer,action_std, batch_size = 512)
         self.load()
         self.get_logger().info(">>> Running Project 3 for TEAM {}".format(TEAM_NAME))
         
@@ -161,7 +156,6 @@ class RCCarPolicy(Node):
         if self.mode == 'val':
             assert os.path.exists(self.model_dir)
             self.model.load(os.path.join(self.model_dir, self.model_name))
-            self.model.policy.to("cpu")
         elif self.mode == 'train':
             self.train()
         else:
@@ -173,10 +167,11 @@ class RCCarPolicy(Node):
         Be sure to satisfy the limitation of steer and speed values.
         """
         obs = torch.tensor(normalize(obs.reshape(1, -1), axis = 1))
-        action = self.model.policy.act_eval(obs)
-        #action = np.array([[action[0][0],action[0][1]]])
-        #speed = 4.
-        #action = np.array([[steer.item(),speed]])
+        org_steer = self.model.policy.act_eval(obs)
+        aug_steer = org_steer * 1.5
+        steer = aug_steer.clamp(-self.max_steer, self.max_steer).item()
+        speed = (np.sqrt(self.max_steer) - 0.7 * np.sqrt(abs(steer))) / np.sqrt(self.max_steer) * self.max_speed
+        action = np.array([[steer,speed]])
         return action
     
     ###################################################
@@ -250,7 +245,6 @@ class RCCarPolicy(Node):
                     result_msg.waypoint = info['waypoint']
                     result_msg.n_waypoints = 20
                     result_msg.success = False
-                    
                     result_msg.fail_type = "Time Out"
                     self.get_logger().info(">>> Time Out: {}".format(map))
                     self.result_pub.publish(result_msg)

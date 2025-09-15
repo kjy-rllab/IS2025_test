@@ -62,18 +62,15 @@ class RolloutBuffer:
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, has_continuous_action_space, action_std_init, vel_action_std_init,max_steer):
+    def __init__(self, state_dim, action_dim, has_continuous_action_space, action_std_init, max_steer):
         super(ActorCritic, self).__init__()
 
         self.has_continuous_action_space = has_continuous_action_space
         self.max_steer = max_steer
-        self.max_vel = 4.0
-        self.min_vel = 2.0
-
+        
         if has_continuous_action_space:
             self.action_dim = action_dim
             self.action_var = torch.full((action_dim,), action_std_init ** 2).to(device)
-            self.action_var[1] = vel_action_std_init * vel_action_std_init
         # actor
         if has_continuous_action_space :
             self.actor = nn.Sequential(
@@ -102,10 +99,9 @@ class ActorCritic(nn.Module):
                         nn.Linear(256, 1)
                     )
         
-    def set_action_std(self, new_steer_action_std,new_vel_action_std):
+    def set_action_std(self, new_action_std):
         if self.has_continuous_action_space:
-            self.action_var = torch.full((self.action_dim,), new_steer_action_std * new_steer_action_std).to(device)
-            self.action_var[1] = new_vel_action_std * new_vel_action_std
+            self.action_var = torch.full((self.action_dim,), new_action_std * new_action_std).to(device)
         else:
             print("--------------------------------------------------------------------------------------------")
             print("WARNING : Calling ActorCritic::set_action_std() on discrete action space policy")
@@ -115,13 +111,9 @@ class ActorCritic(nn.Module):
         raise NotImplementedError
     
     def act(self, state):
+
         if self.has_continuous_action_space:
-            raw_action = self.actor(state)
-            steer_mean = self.max_steer*raw_action[:,0]
-            vel_mean = (self.max_vel)*(raw_action[:,1]+1.)/2
-            steer_mean = steer_mean.clamp(-self.max_steer,self.max_steer)
-            vel_action = vel_mean.clamp(self.min_vel,self.max_vel)
-            action_mean = torch.cat([steer_mean.view(-1,1),vel_mean.view(-1,1)],axis=1)
+            action_mean = self.max_steer*self.actor(state)
             cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
             dist = MultivariateNormal(action_mean, cov_mat)
         else:
@@ -129,32 +121,22 @@ class ActorCritic(nn.Module):
             dist = Categorical(action_probs)
 
         action = dist.sample()
-        steer_action = action[0][0].clamp(-self.max_steer,self.max_steer)
-        vel_action = action[0][1].clamp(0,self.max_vel)
-        action = torch.tensor([steer_action,vel_action]).to(action.device)
+        action = action.clamp(-self.max_steer,self.max_steer)
         action_logprob = dist.log_prob(action)
         state_val = self.critic(state)
 
         return action.detach(), action_logprob.detach(), state_val.detach()
     
     def act_eval(self, state):
-        raw_action = self.actor(state)
-        steer_mean = self.max_steer*raw_action[0][0]
-        steer_mean=  steer_mean.clamp(-self.max_steer,self.max_steer)
-
-        vel_mean = (self.max_vel)*(raw_action[0][1]+1)/2
-        vel_mean = vel_mean.clamp(self.min_vel,self.max_vel)
-        action_mean = torch.tensor([[steer_mean.item(),vel_mean.item()]])
+        if self.has_continuous_action_space:
+            state = torch.FloatTensor(state).to(device)
+            action_mean = self.max_steer * self.actor(state)
+            action_mean = action_mean.clamp(-self.max_steer, self.max_steer)
         return action_mean.detach()
     
     def evaluate(self, state, action):
         if self.has_continuous_action_space:
-            raw_action = self.actor(state)
-            steer_mean = self.max_steer*raw_action[:,0]
-            vel_mean = (self.max_vel)*(raw_action[:,1]+1.)/2
-            steer_mean = steer_mean.clamp(-self.max_steer,self.max_steer)
-            vel_mean = vel_mean.clamp(self.min_vel,self.max_vel)
-            action_mean = torch.cat([steer_mean.view(-1,1),vel_mean.view(-1,1)],axis=1)
+            action_mean = self.max_steer*self.actor(state)
             action_var = self.action_var.expand_as(action_mean)
             cov_mat = torch.diag_embed(action_var).to(device)
             dist = MultivariateNormal(action_mean, cov_mat)
@@ -173,13 +155,12 @@ class ActorCritic(nn.Module):
 
 
 class PPO:
-    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, max_steer,action_std_init=0.6, vel_action_std=2.0,batch_size = 64):
+    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, max_steer,action_std_init=0.6, batch_size = 64):
 
         self.has_continuous_action_space = has_continuous_action_space
 
         if has_continuous_action_space:
             self.action_std = action_std_init
-            self.vel_action_std = vel_action_std
 
         self.gamma = gamma
         self.eps_clip = eps_clip
@@ -188,29 +169,28 @@ class PPO:
         
         self.buffer = RolloutBuffer()
 
-        self.policy = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,vel_action_std,max_steer).to(device)
+        self.policy = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,max_steer).to(device)
         self.optimizer = torch.optim.Adam([
                         {'params': self.policy.actor.parameters(), 'lr': lr_actor},
                         {'params': self.policy.critic.parameters(), 'lr': lr_critic}
                     ])
 
-        self.policy_old = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,vel_action_std,max_steer).to(device)
+        self.policy_old = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,max_steer).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
         
         self.MseLoss = nn.MSELoss()
 
-    def set_action_std(self, new_action_std,new_vel_action_std):
+    def set_action_std(self, new_action_std):
         if self.has_continuous_action_space:
             self.action_std = new_action_std
-            self.vel_action_std = new_vel_action_std
-            self.policy.set_action_std(new_action_std,new_vel_action_std)
-            self.policy_old.set_action_std(new_action_std,new_vel_action_std)
+            self.policy.set_action_std(new_action_std)
+            self.policy_old.set_action_std(new_action_std)
         else:
             print("--------------------------------------------------------------------------------------------")
             print("WARNING : Calling PPO::set_action_std() on discrete action space policy")
             print("--------------------------------------------------------------------------------------------")
 
-    def decay_action_std(self, action_std_decay_rate, min_action_std,vel_action_std_decay_rate, vel_min_action_std):
+    def decay_action_std(self, action_std_decay_rate, min_action_std):
         print("--------------------------------------------------------------------------------------------")
         if self.has_continuous_action_space:
             self.action_std = self.action_std - action_std_decay_rate
@@ -220,15 +200,7 @@ class PPO:
                 print("setting actor output action_std to min_action_std : ", self.action_std)
             else:
                 print("setting actor output action_std to : ", self.action_std)
-
-            self.vel_action_std = self.vel_action_std - vel_action_std_decay_rate
-            self.vel_action_std = round(self.action_std, 4)
-            if (self.vel_action_std <= vel_min_action_std):
-                self.vel_action_std = vel_min_action_std
-                print("setting velocity actor output action_std to min_action_std : ", self.vel_action_std)
-            else:
-                print("setting velocity actor output action_std to : ", self.vel_action_std)
-            self.set_action_std(self.action_std,self.vel_action_std)
+            self.set_action_std(self.action_std)
 
         else:
             print("WARNING : Calling PPO::decay_action_std() on discrete action space policy")

@@ -44,7 +44,7 @@ def get_args():
     parser.add_argument("--no_render", default=False, action='store_true', help="No rendering.")
     parser.add_argument("--mode", default='val', type=str, help="Whether train new model or not")
     parser.add_argument("--traj_dir", default="trajectory", type=str, help="Saved trajectory path relative to 'IS_TEAMNAME/project/'")
-    parser.add_argument("--model_dir", default="model", type=str, help="Model path relative to 'IS_TEAMNAME/project/'")
+    parser.add_argument("--model_dir", default="test_model", type=str, help="Model path relative to 'IS_TEAMNAME/project/'")
 
     
     ###################################################
@@ -55,7 +55,7 @@ def get_args():
     You can add any arguments you want.
     """
     parser.add_argument("--max_timesteps", default=1e4, type=int)
-    parser.add_argument("--model_name", default="model3.pkl", type=str, help="model name to save and use")
+    parser.add_argument("--model_name", default="model.pkl", type=str, help="model name to save and use")
     parser.add_argument("--batch_size", default=512, type=int)
     parser.add_argument("--std_coeff", default=50, type=int)
     parser.add_argument("--std_update", default=120000, type=int)
@@ -150,14 +150,9 @@ class PPOPolicy(Node):
         print_freq = 1000
         log_freq = max_ep_len * 2
 
-        steer_action_std = self.std_coeff *self.max_steer
-        steer_action_std_decay_rate = 0.005 * self.max_steer
-        steer_min_action_std = 0.05
-
-        vel_action_std = 2.
-        vel_action_std_decay_rate = 0.05
-        vel_min_action_std = 0.05
-
+        action_std = self.std_coeff *self.max_steer
+        action_std_decay_rate = 0.005 * self.max_steer
+        min_action_std = 0.05
         action_std_decay_freq = self.std_update
         render_freq = 500000
 
@@ -166,20 +161,20 @@ class PPOPolicy(Node):
         K_epochs = 30
 
         eps_clip = 0.2
-        gamma = 0.97
+        gamma = 0.95
 
         lr_actor = 0.0005
         lr_critic = 0.001
         has_continuous_action_space = True
         state_dim = 720
-        action_dim = 2
+        action_dim = 1
 
-        success_reward = 100000
+        success_reward = 50000
         way_point_reward = 0
-        time_step_reward = -2
+        time_step_reward = -0.1
         failure_reward = -10000
 
-        self.ppo_agent = PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space,self.max_steer,steer_action_std,vel_action_std, batch_size = self.batch_size)
+        self.ppo_agent = PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space,self.max_steer,action_std, batch_size = self.batch_size)
         
         ##########################################
 
@@ -225,7 +220,7 @@ class PPOPolicy(Node):
                     for _ in range(0, max_ep_len):
                         norm_state = normalize(state[2].reshape(1, -1), axis = 1)
                         action = self.ppo_agent.policy_old.act_eval(norm_state)
-                        #action = np.array([action.item(),3.999])
+                        action = np.array([action.item(),3.999])
                         state, _, terminate, _, info = env_eval.step(action)
                         env_eval.render()
                         if terminate:
@@ -234,11 +229,10 @@ class PPOPolicy(Node):
                 pass
                     
             else:
-                prev_vel = 0
                 for _ in range(0, max_ep_len):
                     norm_state = normalize(state[2].reshape(1, -1), axis = 1)
                     action = self.ppo_agent.select_action(norm_state)
-                    #action = np.array([action.item(),3.999])
+                    action = np.array([action.item(),3.999])
                     state, _, terminate, _, info = env.step(action)
                     
                     self.ppo_agent.buffer.is_terminals.append(terminate)
@@ -264,15 +258,13 @@ class PPOPolicy(Node):
                             current_ep_reward += way_point_reward
                         else:
                             self.ppo_agent.buffer.rewards.append(time_step_reward)
-                            current_ep_reward += (-4 + action[1])- 0.1*(prev_vel-action[1])**2           
+                            current_ep_reward += time_step_reward                       
                     time_step += 1
                     print_running_episodes += 1
                     if time_step % update_timestep == 0:
                         self.ppo_agent.update()
                     if has_continuous_action_space and time_step % action_std_decay_freq == 0:
-                        self.ppo_agent.decay_action_std(steer_action_std_decay_rate, steer_min_action_std,vel_action_std_decay_rate, vel_min_action_std)
-
-                    prev_vel = action[1].item()
+                        self.ppo_agent.decay_action_std(action_std_decay_rate, min_action_std)
                     #if(True):
                         #print(info.keys())
                         #break
